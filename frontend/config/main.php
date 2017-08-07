@@ -11,6 +11,7 @@ return [
     'basePath' => dirname(__DIR__),
     'bootstrap' => ['log'],
     'language' =>'zh-CN', 
+    'defaultRoute' => 'default/index',
     'controllerNamespace' => 'frontend\controllers',
     'components' => [
         'request' => [

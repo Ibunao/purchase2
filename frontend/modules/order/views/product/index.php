@@ -178,16 +178,16 @@ $this->params['breadcrumbs'] = [
 
         <div class="button-s-r">
             <button class="btn btn-primary  btn-xs" type="submit">搜索</button>
-            <button class="btn btn-primary  btn-xs"><a href="admin.php?r=order/product/index" style="color: #fff;text-decoration: none;">清空</a></button>
+            <button class="btn btn-primary  btn-xs"><a href="<?=Url::to(['/order/product/index']) ;?>" style="color: #fff;text-decoration: none;">清空</a></button>
         </div>
     </form>
 <div class="form-group">
-    <a href="<?=Url::to(['order/product/add']) ;?>"><button class="btn btn-default btn-sm">添加商品</button></a>
-    <a href="<?=Url::to(['order/product/import']) ;?>"><button class="btn btn-default btn-sm">全新商品导入</button></a>
-    <a href="<?=Url::to(['order/product/export']) ;?>"><button class="btn btn-default btn-sm">导出商品</button></a>
-    <a href="<?=Url::to(['order/product/check']) ;?>"><button class="btn btn-default btn-sm">检查错误</button></a>
+    <a href="<?=Url::to(['/order/product/add']) ;?>"><button class="btn btn-default btn-sm">添加商品</button></a>
+    <a href="<?=Url::to(['/order/product/import']) ;?>"><button class="btn btn-default btn-sm">全新商品导入</button></a>
+    <a href="<?=Url::to(['/order/product/export']) ;?>"><button class="btn btn-default btn-sm">导出商品</button></a>
+    <a href="<?=Url::to(['/order/product/check']) ;?>"><button class="btn btn-default btn-sm">检查错误</button></a>
     <?php if($is_error){ ?>
-        <a href="<?=Url::to(['order/product/dealerror']) ;?>"><button class="btn btn-sm btn-success">一键处理错误商品</button></a>
+        <a href="<?=Url::to(['/order/product/dealerror']) ;?>"><button class="btn btn-sm btn-success">一键处理错误商品</button></a>
         <b style="font-size: 38px">☜</b><b>出现这个请点击处理，否则系统会出问题</b>
     <?php } ?>
 </div>

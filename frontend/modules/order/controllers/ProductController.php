@@ -54,8 +54,8 @@ class ProductController extends BaseController
             }
 
         }
-        $result = $productModel->getProductFilter();
-        $this->render('add', array(
+        $result = $productModel->getAddProductFilter();
+        return $this->render('add', array(
             'selectFilter' => $result
         ));
     }

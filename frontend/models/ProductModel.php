@@ -153,7 +153,7 @@ class ProductModel extends \yii\db\ActiveRecord
      * @param string $page 页码
      * @return array|mixed
      */
-    public function productSearch($arr = [], $page = 1)
+    public function productSearch($arr = [])
     {
 
         $query = self::find()
@@ -210,7 +210,11 @@ class ProductModel extends \yii\db\ActiveRecord
         $result = self::find()->where(['is_error' => 'true'])->andWhere(['disabled' => 'false'])->count();
         return $result;
     }
-
+    /**
+     * 获取添加单个商品时的选择项
+     * @param  array  $data [description]
+     * @return [type]       [description]
+     */
     public function getAddProductFilter($data = [])
     {
         //获取订购会数据
@@ -237,36 +241,386 @@ class ProductModel extends \yii\db\ActiveRecord
         //大分类
         $catBigModel = new CatBigModel;
         $result['catBig'] = $catBigModel->getList();
-
-        $result['season'] = $result['catMiddle'] = $result['catSmall'] = [];
-        if (!empty($data['cat_b'])) {
-            //大分类含有的季节
-            $result['season'] = (new Query)->select(['season_id', 'season_name'])
-                ->from('meet_season_big')
-                ->where(['big_id' => $data['cat_b']])
-                ->all();
-
-            $this->selectQueryRows("season_id, season_name", "{{season_big}}", "big_id = '{$data['cat_b']}'");
-        }
-
-        if (!empty($data['cat_b'])) {
-            $result['catMiddle'] = $this->selectQueryRows("middle_id,cat_name", "{{cat_middle}}");
-        }
-
-        if (!empty($data['cat_b'])) {
-            $result['catSmall'] = $this->selectQueryRows("small_id,small_cat_name AS cat_name", "{{cat_big_small}}", "big_id = '{$data['cat_b']}'");
-        }
-
-        $colorModel = new Color();
+        //颜色。
+        $colorModel = new ColorModel;
         $result['color'] = $colorModel->getColor();
+        //类型
+        $result['type'] = TypeModel::getType();
+        $result['season'] = $result['catMiddle'] = $result['catSmall'] = [];
+        /**
+         * 这些都可以通过ajax来请求
+         */
+        // if (!empty($data['cat_b'])) {
+        //     //大分类含有的季节
+        //     $result['season'] = (new Query)->select(['season_id', 'season_name'])
+        //         ->from('meet_season_big')
+        //         ->where(['big_id' => $data['cat_b']])
+        //         ->all();
+        //     $result['catMiddle'] = CatMiddleModel::getCatMiddle($data['cat_b']);
+        //     $result['catSmall'] = (new Query)->select(['small_id', 'small_cat_name AS cat_name'])
+        //         ->from('meet_cat_big_small')
+        //         ->where(['big_id' => $data['cat_b']])
+        //         ->all();
+        // }
 
-        $typeModel = new Type();
-        $result['type'] = $typeModel->getType();
-
-        if(!empty($data['sizeGroup'])){
-            $result['size'] = $this->selectQueryRows("size_id, size_name", "{{size}}", " group_id='{$data['sizeGroup']}'");
-        }
+        // if(!empty($data['sizeGroup'])){
+        //     $result['size'] = (new Query)->select(['size_id', 'size_name'])
+        //         ->from('meet_size')
+        //         ->where(['group_id' => $data['sizeGroup']])
+        //         ->all();
+        // }
 
         return $result;
     }
+
+    /**
+     * 缓存指定订购会所有产品 包括下架的
+     * @return [type] [description]
+     */
+    public function productListCache()
+    {
+        $purchaseId = Yii::$app->session->get('purchase_id');
+        $list = Yii::$app->cache->get('all-product-list-without-down-' . $purchaseId);
+        if (empty($list)) {
+            $list = self::find()
+                ->where(['purchase_id' => $purchaseId])
+                ->andWhere(['disabled' => 'false'])
+                ->orderBy(['serial_num' => SORT_ASC])
+                ->asArray()
+                ->all();
+            Yii::$app->cache->set('all-product-list-without-down-' . $purchaseId, $list, 86400);
+        }
+        return $list;
+    }
+
+    /**
+     * 商品搜索
+     * @param $conArr  搜索条件
+     * @param $serial   搜索型号
+     * @param $params   小条件
+     * @param int $price  价格排序
+     * @param int $page  页码
+     * @param int $pagesize
+     * @return array
+     */
+    public function newitems($conArr, $serial, $params, $price = 1, $page = 1, $pagesize = 8){
+        
+        //根据输入框的长度来判断是否是 model_sn型号 还是 serial_num 流水号查询 出去重的 style_sn 款号
+        if(strlen($serial) >4){
+            //获取查询的去重的款号 的型号  
+            $row = self::find()->select(['style_sn'])
+                ->where(['like', 'model_sn', $serial.'%', false])//右模糊
+                ->andWhere(['disabled' => 'false'])
+                ->andWhere(['is_down' => 0])
+                ->andWhere(['purchase_id' => $params['purchase_id']])
+                ->distinct()
+                ->all();
+
+            if (empty($row)) return [];
+            //根据查询出的款号 和 搜索条件 获取商品的详细信息
+            $items = $this->listStyleSn($row, $params, $conArr);
+        }else{
+            if (!empty($serial)) {
+                //流水号
+                $row = self::find()->select(['style_sn'])
+                ->where(['serial_num', $serial])
+                ->andWhere(['disabled' => 'false'])
+                ->andWhere(['is_down' => 0])
+                ->andWhere(['purchase_id' => $params['purchase_id']])
+                ->distinct()
+                ->all();
+
+                if (empty($row)) return [];
+                $items = $this->listStyleSn($row, $params, $conArr);
+            }else{
+
+                $style_sn = '';
+                $items = $this->listSerial($style_sn, $params, $conArr);
+            }
+        }
+        //人气排序 1:降序  2:升序
+        $hits_sort = [];
+        if ($params['hits'] && !empty($items)) {
+            //根据下单数量来定义人气
+            $order_item_list = (new Query)->select(['style_sn', 'SUM(nums) AS num'])
+            ->from('meet_order_items')
+            ->where(['disabled' => 'false'])
+            ->groupBy('style_sn')
+            ->all();
+            foreach ($order_item_list as $v) {
+                $order_item_list[$v['style_sn']] = $v['num'];
+            }
+
+            foreach ($items as $k => $v) {
+                $num = isset($order_item_list[$v['style_sn']]) ? $order_item_list[$v['style_sn']] : 0;
+                $items[$k]['hit_num'] = $num;
+                $hits_sort[$k] = $num;
+            }
+
+            $sort2 = $params['hits'] == 2 ? SORT_ASC : SORT_DESC;
+            array_multisort($hits_sort, $sort2, $items);
+        }
+
+        //价格升降排序 1:升序  2:降序
+        $price_sort = [];
+        if ($price && !empty($items)) {
+            foreach ($items as $k => $v) {
+                $price_sort[$k] = $v['cost_price'];
+            }
+            $sort1 = $price == 2 ? SORT_ASC : SORT_DESC;
+            array_multisort($price_sort, $sort1, $items);
+        }
+        //这里可以根据查询条件进行缓存的，这样分页太差劲了
+        //分页超出
+        if (($page - 1) * $pagesize > count($items)) return [];
+        //从数组中取出指定分页需要的数据
+        return array_slice($items, ($page - 1) * $pagesize, $pagesize);
+    }
+
+    /**
+     * 指定型号下的商品搜索
+     * @param array $style_sn   去重的 搜索指定型号model_sn的 款号style_sn
+     * @param $params
+     * @param $conArr
+     * @return array]
+     */
+    public function listStyleSn($style_sn, $params, $conArr)
+    {
+        //尺码表获取所有的尺码  
+        $size_list = $this->gitSizes();
+        //获取该订购会下所有上线的商品
+        $list = $this->getProductUp();
+
+        //获取客户订单详细信息
+        $order_row = $this->getOrderInfo($params['purchase_id'], $params['customer_id']);
+
+        $items_model_sn = [];
+        //记录客户下单的款号style_sn
+        foreach ($order_row as $v) {
+            $items_model_sn[] = $v['style_sn'];
+        }
+        $items = [];
+        // style_sn款号的处理,查找产品
+        foreach ($style_sn as $s) {
+            foreach ($list as $v) {
+                //款号筛选
+                if ($s['style_sn'] && ($v['style_sn'] != $s['style_sn'])) continue;
+
+                //搜索已订条件的产品
+                if ($params['or'] == 1 && !in_array($v['style_sn'], $items_model_sn)) continue;
+                //搜索未订购条件的产品
+                if ($params['or'] == 2 && in_array($v['style_sn'], $items_model_sn)) continue;
+
+                $item = $v;
+                //筛选条件
+                $item['search_id'] = [
+                    's_id_' . $v['cat_b'],
+                    'c_id_' . $v['cat_s'],
+                    'sd_' . $v['season_id'],
+                    'wv_' . $v['wave_id'],
+                    'lv_' . $v['level_id'],
+                    'plv_' . $v['price_level_id'],
+                ];
+
+                //根据筛选条件进行筛选  
+                //根据该条记录拼接数来的筛选条件和用户传过来的筛选条件进行交集，看是否等于用户的筛选条件，如果等于则符合用户筛选
+                if (array_intersect($conArr, $item['search_id']) != $conArr) continue;
+
+                //该商品是否已订 
+                $item['is_order'] = isset($items_model_sn) && in_array($v['style_sn'], $items_model_sn) ? 1 : 2;
+
+                //尺码
+                //款号style_sn 相同则尺寸信息相同  
+                //获取一个style_sn 下产品的所有尺寸,以及商品信息
+                /*
+                 [size] => Array
+                (
+                    [4] => L
+                    [3] => M
+                    [5] => XL
+                )
+
+            [size_item] => Array
+                (
+                    [0] => Array
+                        (
+                            [product_id] => 915
+                            [product_sn] => 143209020163001
+                            [size_name] => L
+                        )
+
+                    [1] => Array
+                        (
+                            [product_id] => 916
+                            [product_sn] => 143209020163002
+                            [size_name] => M
+                        )
+
+                    [2] => Array
+                        (
+                            [product_id] => 917
+                            [product_sn] => 143209020163003
+                            [size_name] => XL
+                        )
+
+                )
+                 */
+                if (isset($items[$v['style_sn']])) {
+                    $item['size'] = $items[$v['style_sn']]['size'];
+                    $item['size_item'] = $items[$v['style_sn']]['size_item'];
+                }
+
+                if (!isset($item['size']) || !in_array($size_list[$v['size_id']], $item['size'])) {
+                    $item['size'][$v['size_id']] = $size_list[$v['size_id']];
+                }
+                $row['product_id'] = $v['product_id'];
+                $row['product_sn'] = $v['product_sn'];
+                $row['size_name'] = $size_list[$v['size_id']];//尺码
+                $item['size_item'][] = $row;
+                $items[$v['style_sn']] = $item;//款号的信息
+            }
+        }
+        return $items;
+    }
+    /**
+     * 搜索框为空是搜索的产品
+     * @return [type] [description]
+     */
+    public function listSerial($style_sn, $params, $conArr)
+    {
+        //尺码表获取所有的尺码  
+        $size_list = $this->gitSizes();
+        //获取该订购会下所有上线的商品
+        $list = $this->getProductUp();
+
+        //获取客户订单详细信息
+        $order_row = $this->getOrderInfo($params['purchase_id'], $params['customer_id']);
+
+        $items_model_sn = [];
+        //记录客户下单的款号style_sn
+        foreach ($order_row as $v) {
+            $items_model_sn[] = $v['style_sn'];
+        }
+        $items = [];
+        foreach ($list as $v) {
+            //款号筛选
+            if ($style_sn && ($v['style_sn'] != $style_sn)) continue;
+
+            //搜索已订条件的产品
+            if ($params['or'] == 1 && !in_array($v['style_sn'], $items_model_sn)) continue;
+            //搜索未订购条件的产品
+            if ($params['or'] == 2 && in_array($v['style_sn'], $items_model_sn)) continue;
+
+            $item = $v;
+            //筛选条件
+            $item['search_id'] = [
+                's_id_' . $v['cat_b'],
+                'c_id_' . $v['cat_s'],
+                'sd_' . $v['season_id'],
+                'wv_' . $v['wave_id'],
+                'lv_' . $v['level_id'],
+                'plv_' . $v['price_level_id'],
+            ];
+
+            //根据筛选条件进行筛选  
+            //根据该条记录拼接数来的筛选条件和用户传过来的筛选条件进行交集，看是否等于用户的筛选条件，如果等于则符合用户筛选
+            if (array_intersect($conArr, $item['search_id']) != $conArr) continue;
+
+            //该商品是否已订 
+            $item['is_order'] = isset($items_model_sn) && in_array($v['style_sn'], $items_model_sn) ? 1 : 2;
+
+            //尺码
+            //款号style_sn 相同则尺寸信息相同  
+            //获取一个style_sn 下产品的所有尺寸,以及商品信息
+            if (isset($items[$v['style_sn']])) {
+                $item['size'] = $items[$v['style_sn']]['size'];
+                $item['size_item'] = $items[$v['style_sn']]['size_item'];
+            }
+
+            if (!isset($item['size']) || !in_array($size_list[$v['size_id']], $item['size'])) {
+                $item['size'][$v['size_id']] = $size_list[$v['size_id']];
+            }
+            $row['product_id'] = $v['product_id'];
+            $row['product_sn'] = $v['product_sn'];
+            $row['size_name'] = $size_list[$v['size_id']];//尺码
+            $item['size_item'][] = $row;
+            $items[$v['style_sn']] = $item;//款号的信息
+        }
+        return $items;
+    }
+    /**
+     * 获取尺码数据
+     * @return [type] [description]
+     */
+    public function getSizes()
+    {
+        $items = Yii::$app->cache->get('size-id-list');
+        if (empty($items)) {
+            $result = (new Query)->select(['size_name', 'size_id'])
+                ->from('size')
+                ->all();
+            $items = [];
+            foreach ($result as $row) {
+                $items[$row['size_id']] = $row['size_name'];
+            }
+            Yii::$app->cache->set('size-id-list', $items);
+        }
+        return $items;
+    }
+    /**
+     * 获取指定订购会下所有上架的商品
+     * @return [type] [description]
+     */
+    public function getProductUp()
+    {
+        $purchaseId = Yii::$app->session['purchase_id'];
+        $items = Yii::$app->cache->get('product-list-'.$purchaseId);
+        if (empty($items)) {
+            $items = self::find()
+                ->where(['purchase_id' => $purchaseId])
+                ->andWhere(['disabled' => 'false'])
+                ->andWhere(['is_down' => 0])
+                ->orderBy(['serial_num' => SORT_ASC])
+                ->asArray()
+                ->all();
+            Yii::$app->cache->set('product-list-'.$purchaseId, $items, 3600*24);
+        }
+        return $list;
+    }
+    /**
+     * 获取客户订单详情
+     * @param  [type] $purchaseId [description]
+     * @param  [type] $customerId [description]
+     * @return [type]             [description]
+     */
+    public function getOrderInfo($purchaseId, $customerId)
+    {
+        //获取订单详情
+        $items = (new Query)->select(['oi.nums', 'oi.product_id', 'oi.style_sn', 'oi.model_sn'])
+            ->from('meet_order as order')
+            ->leftJoin('meet_order_items as oi', 'order.order_id = oi.order_id')
+            ->where(['order.disabled' => 'false'])
+            ->andWhere(['oi.disabled' => 'false'])
+            ->andWhere(['order.purchase_id' => $purchaseId])
+            ->andWhere(['order.customer_id' => $customerId])
+            ->all();
+
+        if (empty($items)) {
+            return [];
+        }
+        //上架商品id
+        $upProductIds = self::find()->select(['product_id'])
+            ->where(['is_down' => 0])
+            ->andWhere(['disabled' => 'false'])
+            ->andWhere(['purchase_id' => $purchaseId])
+            ->indexBy('product_id')
+            ->asArray()->all();
+        $model = [];
+        foreach ($items as $item) {
+            $model[$item['product_id']] = $item;
+            $model[$item['product_id']]['is_down'] = isset($upProductIds['purchase_id'])?0:1;
+        }
+        return $model;
+    }
+
 }
